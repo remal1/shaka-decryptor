@@ -27,3 +27,23 @@ __pycache__/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Media & Video files
+*.mp4
+*.m4s
+*.m4a
+*.m4v
+*.mkv
+*.webm
+*.aac
+*.mp3
+*.vtt
+*.srt
+temp_*.mp4
+
+# Do not ignore TypeScript source files
+!*.ts
+!examples/**/*.ts
+!src/**/*.ts
+
+

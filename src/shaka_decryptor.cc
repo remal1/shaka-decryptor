@@ -37,6 +37,10 @@ struct StreamCbInfo {
   ShakaSizeFunc size_cb = nullptr;
   void* user_data = nullptr;
 
+  // Callback-based (memory) output. Null for file-based output.
+  ShakaWriteFunc write_cb = nullptr;
+  void* write_user_data = nullptr;
+
   // Progress tracking (used for both memory- and file-based streams).
   std::atomic<int64_t> bytes_read{0};
   int64_t total_size = -1;     // -1 = unknown
@@ -76,61 +80,87 @@ static std::map<std::string, ShakaDecryptor*> g_contexts_map;
 // ---------------------------------------------------------------------------
 
 static void MaybeReportProgress(ShakaDecryptor* ctx, const std::string& key) {
-  if (!ctx->progress_cb) return;
+  if (!ctx || !ctx->progress_cb) return;
 
-  auto it = ctx->stream_cbs.find(key);
-  if (it == ctx->stream_cbs.end()) return;
+  std::string disp_name;
+  int64_t bytes_read = 0;
+  int64_t total = 0;
+  void* user_data = ctx->progress_user_data;
 
-  const StreamCbInfo& info = it->second;
-  int64_t bytes_read = info.bytes_read.load();
-  int64_t total = info.total_size;
+  {
+    std::lock_guard<std::mutex> lock(g_contexts_mutex);
+    auto it = ctx->stream_cbs.find(key);
+    if (it == ctx->stream_cbs.end()) return;
+    disp_name = it->second.display_name;
+    bytes_read = it->second.bytes_read.load();
+    total = it->second.total_size;
+  }
 
   ctx->progress_cb(
-      info.display_name.c_str(),
+      disp_name.c_str(),
       static_cast<uint64_t>(bytes_read),
       total > 0 ? static_cast<uint64_t>(total) : 0,
-      ctx->progress_user_data);
+      user_data);
 }
 
 // ---------------------------------------------------------------------------
-// Shaka BufferCallbackParams read/size functions
+// Shaka BufferCallbackParams read/size/write functions
 // ---------------------------------------------------------------------------
 
 static int64_t CbReadFunc(const std::string& name, void* buffer, uint64_t size) {
-  std::lock_guard<std::mutex> lock(g_contexts_mutex);
-  auto ctx_it = g_contexts_map.find(name);
-  if (ctx_it == g_contexts_map.end()) return -1;
+  ShakaDecryptor* ctx = nullptr;
+  ShakaReadFunc read_cb = nullptr;
+  void* user_data = nullptr;
 
-  ShakaDecryptor* ctx = ctx_it->second;
-  auto stream_it = ctx->stream_cbs.find(name);
-  if (stream_it == ctx->stream_cbs.end()) return -1;
+  {
+    std::lock_guard<std::mutex> lock(g_contexts_mutex);
+    auto ctx_it = g_contexts_map.find(name);
+    if (ctx_it == g_contexts_map.end()) return -1;
 
-  StreamCbInfo& info = stream_it->second;
-  if (!info.read_cb) return -1;
+    ctx = ctx_it->second;
+    auto stream_it = ctx->stream_cbs.find(name);
+    if (stream_it == ctx->stream_cbs.end()) return -1;
 
-  int64_t bytes_read = info.read_cb(name.c_str(), buffer, size, info.user_data);
+    read_cb   = stream_it->second.read_cb;
+    user_data = stream_it->second.user_data;
+  }
+
+  if (!read_cb) return -1;
+
+  int64_t bytes_read = read_cb(name.c_str(), buffer, size, user_data);
   if (bytes_read > 0) {
-    info.bytes_read += bytes_read;
+    {
+      std::lock_guard<std::mutex> lock(g_contexts_mutex);
+      auto stream_it = ctx->stream_cbs.find(name);
+      if (stream_it != ctx->stream_cbs.end()) {
+        stream_it->second.bytes_read += bytes_read;
+      }
+    }
     MaybeReportProgress(ctx, name);
   }
   return bytes_read;
 }
 
-static int64_t CbSizeFunc(const std::string& name) {
-  std::lock_guard<std::mutex> lock(g_contexts_mutex);
-  auto ctx_it = g_contexts_map.find(name);
-  if (ctx_it == g_contexts_map.end()) return -1;
+static int64_t CbWriteFunc(const std::string& name, const void* buffer, uint64_t size) {
+  ShakaDecryptor* ctx = nullptr;
+  ShakaWriteFunc write_cb = nullptr;
+  void* user_data = nullptr;
 
-  ShakaDecryptor* ctx = ctx_it->second;
-  auto stream_it = ctx->stream_cbs.find(name);
-  if (stream_it == ctx->stream_cbs.end()) return -1;
+  {
+    std::lock_guard<std::mutex> lock(g_contexts_mutex);
+    auto ctx_it = g_contexts_map.find(name);
+    if (ctx_it == g_contexts_map.end()) return -1;
 
-  StreamCbInfo& info = stream_it->second;
-  if (!info.size_cb) return -1;
+    ctx = ctx_it->second;
+    auto stream_it = ctx->stream_cbs.find(name);
+    if (stream_it == ctx->stream_cbs.end()) return -1;
 
-  int64_t sz = info.size_cb(name.c_str(), info.user_data);
-  info.total_size = sz;
-  return sz;
+    write_cb  = stream_it->second.write_cb;
+    user_data = stream_it->second.write_user_data;
+  }
+
+  if (!write_cb) return -1;
+  return write_cb(name.c_str(), buffer, size, user_data);
 }
 
 // ---------------------------------------------------------------------------
@@ -201,8 +231,8 @@ static ShakaLogInterceptor* g_log_interceptor = nullptr;
 ShakaDecryptor* ShakaDecryptor_Create(void) {
   ShakaDecryptor* ctx = new ShakaDecryptor();
   ctx->params.decryption_params.key_provider = KeyProvider::kRawKey;
-  ctx->my_callback_params.read_func = CbReadFunc;
-  ctx->my_callback_params.size_func = CbSizeFunc;
+  ctx->my_callback_params.read_func  = CbReadFunc;
+  ctx->my_callback_params.write_func = CbWriteFunc;
   // Default segment duration required by ChunkingHandler.
   ctx->params.chunking_params.segment_duration_in_seconds = 6.0;
   ctx->params.chunking_params.subsegment_duration_in_seconds = 0.0;
@@ -304,63 +334,94 @@ int ShakaDecryptor_SetConsoleLogging(int enabled) {
   return 0;
 }
 
-int ShakaDecryptor_AddStream(ShakaDecryptor* ctx,
-                             const char* name,
-                             ShakaReadFunc read_cb,
-                             ShakaSizeFunc size_cb,
-                             void* stream_user_data,
-                             const char* output_path) {
+int ShakaDecryptor_AddStreamEx(ShakaDecryptor* ctx,
+                               const char* name,
+                               ShakaReadFunc read_cb,
+                               ShakaSizeFunc size_cb,
+                               void* stream_user_data,
+                               const char* output_path,
+                               ShakaWriteFunc write_cb,
+                               void* write_user_data) {
   if (!ctx || !name || !output_path) return -1;
 
   std::string input_uri;
-  std::string lookup_key;
+  std::string input_lookup_key;
 
-  StreamCbInfo cb_info;
-  cb_info.display_name = name;
+  std::string output_uri;
+  std::string output_lookup_key;
+
+  StreamCbInfo in_cb_info;
+  in_cb_info.display_name = name;
 
   if (read_cb) {
     // Memory-based input via callback://<addr>/<name>
     char addr_buf[64];
     snprintf(addr_buf, sizeof(addr_buf), "callback://%" PRIu64 "/",
              reinterpret_cast<uint64_t>(&ctx->my_callback_params));
-    input_uri  = std::string(addr_buf) + name;
-    lookup_key = name;
+    input_uri        = std::string(addr_buf) + name;
+    input_lookup_key = name;
 
-    cb_info.read_cb   = read_cb;
-    cb_info.size_cb   = size_cb;
-    cb_info.user_data = stream_user_data;
+    in_cb_info.read_cb   = read_cb;
+    in_cb_info.size_cb   = size_cb;
+    in_cb_info.user_data = stream_user_data;
 
     // Pre-query size for progress reporting.
     if (size_cb) {
-      cb_info.total_size = size_cb(name, stream_user_data);
+      in_cb_info.total_size = size_cb(name, stream_user_data);
     }
   } else {
     // File-based input: name IS the file path.
-    input_uri  = name;
-    lookup_key = name;
-    cb_info.total_size = GetFileSize64(name);
+    input_uri        = name;
+    input_lookup_key = name;
+    in_cb_info.total_size = GetFileSize64(name);
   }
 
-  StreamCbInfo& stored = ctx->stream_cbs[lookup_key];
-  stored.display_name = cb_info.display_name;
-  stored.read_cb      = cb_info.read_cb;
-  stored.size_cb      = cb_info.size_cb;
-  stored.user_data    = cb_info.user_data;
-  stored.total_size   = cb_info.total_size;
-  stored.bytes_read.store(0);
+  StreamCbInfo& stored_in = ctx->stream_cbs[input_lookup_key];
+  stored_in.display_name = in_cb_info.display_name;
+  stored_in.read_cb      = in_cb_info.read_cb;
+  stored_in.size_cb      = in_cb_info.size_cb;
+  stored_in.user_data    = in_cb_info.user_data;
+  stored_in.total_size   = in_cb_info.total_size;
+  stored_in.bytes_read.store(0);
+
+  if (write_cb) {
+    char addr_buf[64];
+    snprintf(addr_buf, sizeof(addr_buf), "callback://%" PRIu64 "/",
+             reinterpret_cast<uint64_t>(&ctx->my_callback_params));
+    output_uri        = std::string(addr_buf) + output_path;
+    output_lookup_key = output_path;
+
+    StreamCbInfo& stored_out = ctx->stream_cbs[output_lookup_key];
+    stored_out.write_cb        = write_cb;
+    stored_out.write_user_data = write_user_data;
+  } else {
+    output_uri = output_path;
+  }
 
   StreamDescriptor stream;
   stream.input           = input_uri;
   stream.stream_selector = "0";
-  stream.output          = output_path;
+  stream.output          = output_uri;
   ctx->streams.push_back(stream);
 
   {
     std::lock_guard<std::mutex> lock(g_contexts_mutex);
-    g_contexts_map[lookup_key] = ctx;
+    g_contexts_map[input_lookup_key] = ctx;
+    if (write_cb) {
+      g_contexts_map[output_lookup_key] = ctx;
+    }
   }
 
   return 0;
+}
+
+int ShakaDecryptor_AddStream(ShakaDecryptor* ctx,
+                             const char* name,
+                             ShakaReadFunc read_cb,
+                             ShakaSizeFunc size_cb,
+                             void* stream_user_data,
+                             const char* output_path) {
+  return ShakaDecryptor_AddStreamEx(ctx, name, read_cb, size_cb, stream_user_data, output_path, nullptr, nullptr);
 }
 
 int ShakaDecryptor_Run(ShakaDecryptor* ctx) {

@@ -42,6 +42,10 @@ typedef enum {
 // Returns number of bytes read, or -1 on error/EOF.
 typedef int64_t (*ShakaReadFunc)(const char* name, void* buffer, uint64_t size, void* user_data);
 
+// Called to write decrypted data to an output stream (memory-based output).
+// Returns number of bytes written, or -1 on error.
+typedef int64_t (*ShakaWriteFunc)(const char* name, const void* buffer, uint64_t size, void* user_data);
+
 // Called to query the total size of a stream (memory-based input).
 // Returns size in bytes, or -1 if unknown.
 typedef int64_t (*ShakaSizeFunc)(const char* name, void* user_data);
@@ -121,7 +125,7 @@ SHAKA_DECRYPTOR_EXPORT int ShakaDecryptor_SetConsoleLogging(int enabled);
 // Stream management
 // ---------------------------------------------------------------------------
 
-// Add a stream for decryption.
+// Add a stream for decryption (file-based or memory input, file-based output).
 // Can be called multiple times for multiple tracks (e.g. separate video/audio files).
 //
 // name:             Human-readable identifier used in progress callbacks.
@@ -139,6 +143,22 @@ SHAKA_DECRYPTOR_EXPORT int ShakaDecryptor_AddStream(ShakaDecryptor* ctx,
                                                     ShakaSizeFunc size_cb,
                                                     void* stream_user_data,
                                                     const char* output_path);
+
+// Add a stream for decryption with extended memory I/O support (in-memory input AND/OR output).
+//
+// output_path:      Destination file path, or an identifier for the output stream when write_cb is set.
+// write_cb:         Called to write decrypted data directly to memory. Pass NULL for file-based output.
+// write_user_data:  Opaque pointer passed back to write_cb.
+//
+// Returns 0 on success, non-zero on failure.
+SHAKA_DECRYPTOR_EXPORT int ShakaDecryptor_AddStreamEx(ShakaDecryptor* ctx,
+                                                      const char* name,
+                                                      ShakaReadFunc read_cb,
+                                                      ShakaSizeFunc size_cb,
+                                                      void* stream_user_data,
+                                                      const char* output_path,
+                                                      ShakaWriteFunc write_cb,
+                                                      void* write_user_data);
 
 // ---------------------------------------------------------------------------
 // Execution

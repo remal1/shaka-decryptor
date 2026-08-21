@@ -34,8 +34,16 @@ shaka-decryptor/
 ├── patches/
 │   └── size_callback.patch        # Automated patch for Shaka Packager size callback
 ├── examples/
-│   └── python/
-│       └── decrypt_scenario.py    # Python ctypes integration example
+│   ├── python/
+│   │   ├── decrypt_scenario.py        # File-based reference scenario
+│   │   ├── in_memory_decrypt_demo.py  # Full buffer in-memory decryption
+│   │   └── streaming_decrypt_demo.py  # Real-time pipelined streaming decryption
+│   └── bun/
+│       ├── shaka_bindings.ts          # Bun FFI bindings module
+│       ├── decrypt_worker.ts          # Dedicated Worker thread
+│       ├── decrypt_scenario.ts        # File-based scenario (Worker)
+│       ├── in_memory_decrypt_demo.ts  # In-memory buffer decryption (Worker)
+│       └── streaming_decrypt_demo.ts  # Real-time streaming decryption (Worker)
 └── third_party/
     └── shaka-packager/            # Git submodule (Shaka Packager core)
 ```
