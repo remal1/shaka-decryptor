@@ -1,0 +1,30 @@
+diff --git a/include/packager/buffer_callback_params.h b/include/packager/buffer_callback_params.h
+index 48d2bbd729..487b3c27d8 100644
+--- a/include/packager/buffer_callback_params.h
++++ b/include/packager/buffer_callback_params.h
+@@ -30,6 +30,9 @@ struct BufferCallbackParams {
+   std::function<
+       int64_t(const std::string& name, const void* buffer, uint64_t size)>
+       write_func;
++  /// If this function is specified, it provides the total size of the stream 
++  /// with the given @a name. Returns -1 if the size is unknown.
++  std::function<int64_t(const std::string& name)> size_func;
+ };
+ 
+ }  // namespace shaka
+diff --git a/packager/file/callback_file.cc b/packager/file/callback_file.cc
+index 6867feabac..c4a9d7832e 100644
+--- a/packager/file/callback_file.cc
++++ b/packager/file/callback_file.cc
+@@ -44,7 +44,10 @@ int64_t CallbackFile::Write(const void* buffer, uint64_t length) {
+ void CallbackFile::CloseForWriting() {}
+ 
+ int64_t CallbackFile::Size() {
+-  LOG(INFO) << "CallbackFile does not support Size().";
++  if (callback_params_ && callback_params_->size_func) {
++    return callback_params_->size_func(name_);
++  }
++  LOG(INFO) << "CallbackFile size unknown.";
+   return -1;
+ }
+ 

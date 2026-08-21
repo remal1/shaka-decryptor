@@ -1,0 +1,3 @@
+[submodule "third_party/shaka-packager"]
+	path = third_party/shaka-packager
+	url = https://github.com/shaka-project/shaka-packager.git

@@ -1,0 +1,29 @@
+# Build outputs
+build/
+bin/
+lib/
+*.dll
+*.so
+*.dylib
+*.exp
+*.lib
+*.pdb
+*.obj
+*.o
+*.a
+
+# IDE / Editor files
+.vs/
+*.vcxproj*
+*.sln
+.vscode/
+.idea/
+.codegraph/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS files
+.DS_Store
+Thumbs.db
