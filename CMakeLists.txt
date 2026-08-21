@@ -22,18 +22,18 @@ if(NOT EXISTS "${SHAKA_PACKAGER_DIR}/CMakeLists.txt")
   )
 endif()
 
-# Check and apply size_callback.patch if needed
+# Check and apply shaka_packager.patch if needed
 file(READ "${SHAKA_PACKAGER_DIR}/include/packager/buffer_callback_params.h" _HEADER_CONTENT)
 if(NOT _HEADER_CONTENT MATCHES "size_func")
-  message(STATUS "Applying size_callback.patch to Shaka Packager...")
+  message(STATUS "Applying shaka_packager.patch to Shaka Packager...")
   find_package(Git REQUIRED)
   execute_process(
-    COMMAND ${GIT_EXECUTABLE} apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/size_callback.patch"
+    COMMAND ${GIT_EXECUTABLE} apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/shaka_packager.patch"
     WORKING_DIRECTORY "${SHAKA_PACKAGER_DIR}"
     RESULT_VARIABLE _PATCH_RESULT
   )
   if(NOT _PATCH_RESULT EQUAL 0)
-    message(FATAL_ERROR "Failed to apply size_callback.patch to ${SHAKA_PACKAGER_DIR}")
+    message(FATAL_ERROR "Failed to apply shaka_packager.patch to ${SHAKA_PACKAGER_DIR}")
   endif()
   message(STATUS "Patch applied successfully.")
 endif()

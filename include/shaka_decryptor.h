@@ -122,11 +122,57 @@ SHAKA_DECRYPTOR_EXPORT int ShakaDecryptor_SetLogLevel(ShakaDecryptor* ctx, Shaka
 SHAKA_DECRYPTOR_EXPORT int ShakaDecryptor_SetConsoleLogging(int enabled);
 
 // ---------------------------------------------------------------------------
+// Stream options & metadata
+// ---------------------------------------------------------------------------
+
+// Granular configuration options for a single stream/track.
+typedef struct ShakaStreamOptions {
+  // Stream selector: "video", "audio", "text", "0", "1", etc. Pass NULL for default ("0").
+  const char* stream_selector;
+  // ISO-639-2 language tag (e.g. "hun", "eng", "fra", "deu"). Overrides input language metadata.
+  const char* language;
+  // User-facing track label/title (e.g. "Magyar 5.1 Szinkron", "English Audio").
+  const char* track_label;
+  // Container output format: "mp4", "mkv", "webm", "ts". Pass NULL to auto-detect from output name.
+  const char* output_format;
+  // Container input format: "mp4", "webm", "vtt", "ttml". Useful for headerless live streams.
+  const char* input_format;
+  // Forced subtitle flag: 1 = forced narrative subtitle, 0 = normal subtitle.
+  int forced_subtitle;
+  // User-specified bitrate in bits/sec (0 = auto-estimate).
+  uint32_t bandwidth;
+  // Trick mode frame sampling rate (0 = disabled).
+  uint32_t trick_play_factor;
+} ShakaStreamOptions;
+
+// Stream metadata retrieved by probing.
+typedef struct ShakaStreamMetadata {
+  int stream_type;              // 0=Unknown, 1=Audio, 2=Video, 3=Text
+  char codec[32];               // e.g. "avc1.640028", "hev1.1.6.L93.90", "mp4a.40.2", "wvtt"
+  char language[16];            // e.g. "hun", "eng"
+  int width;                    // Video width in pixels (0 for audio/text)
+  int height;                   // Video height in pixels (0 for audio/text)
+  double frame_rate;            // Video framerate (0 for audio/text)
+  int audio_channels;           // Audio channels (e.g. 2, 6)
+  int sample_rate;              // Audio sampling rate in Hz (e.g. 48000)
+  double duration_seconds;      // Stream duration in seconds
+} ShakaStreamMetadata;
+
+// Aggregated media container information retrieved by probing.
+typedef struct ShakaMediaInfo {
+  int stream_count;
+  ShakaStreamMetadata streams[16];
+  char container_format[32];    // e.g. "MP4", "WebM", "MPEG2-TS"
+  double duration_seconds;
+} ShakaMediaInfo;
+
+// ---------------------------------------------------------------------------
 // Stream management
 // ---------------------------------------------------------------------------
 
 // Add a stream for decryption (file-based or memory input, file-based output).
 // Can be called multiple times for multiple tracks (e.g. separate video/audio files).
+// If multiple streams share the SAME output_path, Shaka multiplexes them into a single file.
 //
 // name:             Human-readable identifier used in progress callbacks.
 //                   For memory-based input, also used as the callback key.
@@ -160,13 +206,85 @@ SHAKA_DECRYPTOR_EXPORT int ShakaDecryptor_AddStreamEx(ShakaDecryptor* ctx,
                                                       ShakaWriteFunc write_cb,
                                                       void* write_user_data);
 
+// Add a stream with granular options (language, track label, forced subtitle, format, etc.).
+//
+// options:          Pointer to ShakaStreamOptions, or NULL for defaults.
+//
+// Returns 0 on success, non-zero on failure.
+SHAKA_DECRYPTOR_EXPORT int ShakaDecryptor_AddStreamWithOptions(
+    ShakaDecryptor* ctx,
+    const char* name,
+    ShakaReadFunc read_cb,
+    ShakaSizeFunc size_cb,
+    void* stream_user_data,
+    const char* output_path,
+    ShakaWriteFunc write_cb,
+    void* write_user_data,
+    const ShakaStreamOptions* options);
+
 // ---------------------------------------------------------------------------
-// Execution
+// Execution & Control
 // ---------------------------------------------------------------------------
 
-// Run the decryption. Blocks until all streams are processed.
-// Returns 0 on success, non-zero on error (retrieve message with GetLastError).
+// Run the decryption. Blocks until all streams are processed or cancelled.
+// Returns 0 on success, non-zero on error/cancellation (retrieve message with GetLastError).
 SHAKA_DECRYPTOR_EXPORT int ShakaDecryptor_Run(ShakaDecryptor* ctx);
+
+// Cancel an active decryption run. Thread-safe: can be called from any thread.
+// Causes ShakaDecryptor_Run to immediately stop processing and exit with an error/cancelled status.
+// Returns 0 on success.
+SHAKA_DECRYPTOR_EXPORT int ShakaDecryptor_Cancel(ShakaDecryptor* ctx);
+
+// Performance and throughput statistics.
+typedef struct ShakaStats {
+  uint64_t total_bytes_read;
+  uint64_t total_bytes_written;
+  double execution_duration_ms;
+  double throughput_mb_per_sec;
+} ShakaStats;
+
+// Dynamic key request callback invoked when an unknown KID or PSSH is encountered.
+// Should populate out_key_hex with the 32-character hex key string.
+// Returns 0 if key was provided, non-zero if unavailable.
+typedef int (*ShakaKeyRequestFunc)(
+    const char* key_id_hex,
+    const uint8_t* pssh_data,
+    uint32_t pssh_size,
+    char* out_key_hex,
+    size_t out_key_max_len,
+    void* user_data);
+
+// Retrieve execution metrics and throughput from a completed run.
+SHAKA_DECRYPTOR_EXPORT int ShakaDecryptor_GetStats(
+    ShakaDecryptor* ctx,
+    ShakaStats* out_stats);
+
+// Set dynamic key request callback.
+SHAKA_DECRYPTOR_EXPORT int ShakaDecryptor_SetKeyRequestCallback(
+    ShakaDecryptor* ctx,
+    ShakaKeyRequestFunc cb,
+    void* user_data);
+
+// One-shot, zero-setup in-memory buffer decryption.
+// Decrypts an encrypted MP4/CMAF buffer completely in RAM.
+// Allocated out_data buffer must be freed by caller using ShakaDecryptor_FreeBuffer().
+// Returns 0 on success.
+SHAKA_DECRYPTOR_EXPORT int ShakaDecryptor_DecryptBuffer(
+    const uint8_t* in_data,
+    uint64_t in_size,
+    const char* kid_hex,
+    const char* key_hex,
+    uint8_t** out_data,
+    uint64_t* out_size);
+
+// Free buffer allocated by ShakaDecryptor_DecryptBuffer.
+SHAKA_DECRYPTOR_EXPORT void ShakaDecryptor_FreeBuffer(uint8_t* buffer);
+
+// Probe a media file to inspect its streams and extract metadata without full playback.
+// Returns 0 on success, non-zero on error.
+SHAKA_DECRYPTOR_EXPORT int ShakaDecryptor_ProbeMedia(
+    const char* input_path,
+    ShakaMediaInfo* out_info);
 
 #ifdef __cplusplus
 }
